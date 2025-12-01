@@ -1,10 +1,16 @@
 package inbound
 
-import "net"
+import (
+	"net"
+
+	"example.com/me/myproxy/internal/plugin"
+)
 
 // Handler функция для обработки нового соединения
+// conn - соединение от клиента
 // targetAddress - целевой адрес для подключения (определяется протоколом)
-type Handler func(conn net.Conn, targetAddress string) error
+// ctx - контекст соединения с метаданными
+type Handler func(conn net.Conn, targetAddress string, ctx *plugin.ConnectionContext) error
 
 // Inbound интерфейс для inbound обработчиков
 type Inbound interface {

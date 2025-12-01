@@ -12,6 +12,9 @@ import (
 	"example.com/me/myproxy/config"
 	"example.com/me/myproxy/inbound"
 	"example.com/me/myproxy/internal/logger"
+	"example.com/me/myproxy/internal/plugin"
+	"example.com/me/myproxy/internal/plugins/traffic"
+	"example.com/me/myproxy/internal/router"
 	"example.com/me/myproxy/outbound"
 	"example.com/me/myproxy/proxy"
 )
@@ -30,6 +33,33 @@ func main() {
 	if debug {
 		logger.SetLevel(logger.LevelDebug)
 		logger.Debug("main", "Debug logging enabled")
+	}
+
+	// Initialize Router
+	rtr := router.NewStaticRouter()
+
+	// Initialize Plugin Manager
+	pluginManager := plugin.NewManager()
+
+	// Load and initialize plugins
+	if cfg.Plugins.TrafficInbound != nil && cfg.Plugins.TrafficInbound.Enabled {
+		trafficInbound := traffic.NewInboundCounter()
+		if err := trafficInbound.Init(cfg.Plugins.TrafficInbound.Config); err != nil {
+			log.Fatalf("Failed to initialize traffic_inbound plugin: %v", err)
+		}
+		pluginManager.RegisterInboundPlugin(trafficInbound)
+		pluginManager.RegisterTrafficPlugin(trafficInbound)
+		logger.Info("main", "Traffic inbound plugin enabled")
+	}
+
+	if cfg.Plugins.TrafficOutbound != nil && cfg.Plugins.TrafficOutbound.Enabled {
+		trafficOutbound := traffic.NewOutboundCounter()
+		if err := trafficOutbound.Init(cfg.Plugins.TrafficOutbound.Config); err != nil {
+			log.Fatalf("Failed to initialize traffic_outbound plugin: %v", err)
+		}
+		pluginManager.RegisterOutboundPlugin(trafficOutbound)
+		pluginManager.RegisterTrafficPlugin(trafficOutbound)
+		logger.Info("main", "Traffic outbound plugin enabled")
 	}
 
 	// Initialize outbound
@@ -56,11 +86,13 @@ func main() {
 	}
 
 	// Connection handler
-	handler := func(conn net.Conn, targetAddress string) error {
+	handler := func(conn net.Conn, targetAddress string, ctx *plugin.ConnectionContext) error {
 		if targetAddress == "" {
 			return fmt.Errorf("target address not specified")
 		}
-		return proxy.HandleConnection(conn, ob.Dial, targetAddress)
+		// Устанавливаем InboundID из конфигурации
+		ctx.InboundID = cfg.Inbound.ID
+		return proxy.HandleConnection(conn, ob, cfg.Outbound.ID, &cfg.Outbound, targetAddress, cfg.Inbound.ID, rtr, pluginManager)
 	}
 
 	// Start inbound
@@ -83,6 +115,9 @@ func main() {
 	logger.Info("main", "Shutting down proxy...")
 	if err := ib.Stop(); err != nil {
 		logger.Error("main", "Error stopping inbound: %v", err)
+	}
+	if err := pluginManager.Close(); err != nil {
+		logger.Error("main", "Error closing plugins: %v", err)
 	}
 }
 

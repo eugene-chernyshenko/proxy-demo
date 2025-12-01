@@ -4,6 +4,11 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"example.com/me/myproxy/config"
+	"example.com/me/myproxy/internal/plugin"
+	"example.com/me/myproxy/internal/router"
+	"example.com/me/myproxy/outbound"
 )
 
 func TestCopyData(t *testing.T) {
@@ -145,18 +150,23 @@ func TestHandleConnection(t *testing.T) {
 	// Создаем клиентское соединение
 	clientConn, proxyConn := net.Pipe()
 
-	// Создаем mock dial функцию
-	mockDial := func(network, address string) (net.Conn, error) {
-		if address != serverAddr {
-			return nil, net.UnknownNetworkError("unknown address")
-		}
-		return net.Dial("tcp", serverAddr)
+	// Создаем mock outbound
+	mockOutbound := outbound.NewDirectOutbound()
+	
+	// Создаем router
+	rtr := router.NewStaticRouter()
+	
+	// Создаем plugin manager
+	pluginManager := plugin.NewManager()
+	
+	currentOutboundConfig := &config.OutboundConfig{
+		Type: "direct",
 	}
 
 	// Запускаем HandleConnection в отдельной горутине
 	done := make(chan error, 1)
 	go func() {
-		done <- HandleConnection(proxyConn, mockDial, serverAddr)
+		done <- HandleConnection(proxyConn, mockOutbound, "outbound-1", currentOutboundConfig, serverAddr, "inbound-1", rtr, pluginManager)
 	}()
 
 	// Отправляем данные от клиента

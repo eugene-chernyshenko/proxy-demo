@@ -6,6 +6,7 @@ import (
 	"net"
 
 	"example.com/me/myproxy/internal/logger"
+	"example.com/me/myproxy/internal/plugin"
 )
 
 // SOCKS5Inbound реализует SOCKS5 inbound
@@ -188,8 +189,11 @@ func (s *SOCKS5Inbound) handleSOCKS5(conn net.Conn, handler Handler) error {
 
 	logger.Debug("inbound", "SOCKS5 connection established from %s to %s", remoteAddr, targetAddress)
 
+	// Создаем контекст соединения
+	ctx := plugin.NewConnectionContext(remoteAddr, targetAddress)
+
 	// Now forward the connection through handler
-	err = handler(conn, targetAddress)
+	err = handler(conn, targetAddress, ctx)
 	if err != nil {
 		logger.Debug("inbound", "SOCKS5 connection from %s to %s closed with error: %v", remoteAddr, targetAddress, err)
 	} else {
