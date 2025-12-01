@@ -31,15 +31,17 @@ func main() {
 		logger.SetLevel(logger.LevelDebug)
 		logger.Debug("main", "Debug logging enabled")
 	}
-	if err != nil {
-		log.Fatalf("Failed to load configuration: %v", err)
-	}
 
 	// Initialize outbound
 	var ob outbound.Outbound
 	switch cfg.Outbound.Type {
 	case "direct":
 		ob = outbound.NewDirectOutbound()
+	case "socks5":
+		if cfg.Outbound.ProxyAddress == "" {
+			log.Fatalf("proxy_address is required for SOCKS5 outbound")
+		}
+		ob = outbound.NewSOCKS5Outbound(cfg.Outbound.ProxyAddress)
 	default:
 		log.Fatalf("Unsupported outbound type: %s", cfg.Outbound.Type)
 	}
@@ -66,7 +68,12 @@ func main() {
 		log.Fatalf("Failed to start inbound: %v", err)
 	}
 
-	logger.Info("main", "SOCKS5 proxy started on port %d (direct outbound)", cfg.Inbound.Port)
+	outboundType := cfg.Outbound.Type
+	if outboundType == "socks5" {
+		logger.Info("main", "SOCKS5 proxy started on port %d (SOCKS5 outbound via %s)", cfg.Inbound.Port, cfg.Outbound.ProxyAddress)
+	} else {
+		logger.Info("main", "SOCKS5 proxy started on port %d (%s outbound)", cfg.Inbound.Port, outboundType)
+	}
 
 	// Wait for shutdown signal
 	sigChan := make(chan os.Signal, 1)

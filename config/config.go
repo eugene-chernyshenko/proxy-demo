@@ -8,7 +8,8 @@ type InboundConfig struct {
 
 // OutboundConfig представляет конфигурацию outbound
 type OutboundConfig struct {
-	Type string `json:"type"` // "direct" для этапа 0
+	Type         string `json:"type"`          // "direct" или "socks5"
+	ProxyAddress string `json:"proxy_address"` // Адрес SOCKS5 прокси (для типа "socks5")
 }
 
 // Config представляет полную конфигурацию приложения

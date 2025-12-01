@@ -10,12 +10,12 @@ import (
 // HandleConnection обрабатывает соединение от inbound и пересылает через outbound
 func HandleConnection(inboundConn net.Conn, dial func(network, address string) (net.Conn, error), targetAddress string) error {
 	defer func() {
-		logger.Debug("proxy", "Proxy connection to %s closed", targetAddress)
+		logger.Debug("proxy", "Outbound connection to %s closed", targetAddress)
 		inboundConn.Close()
 	}()
 
 	// Establish connection to target address through outbound
-	logger.Debug("proxy", "Establishing proxy connection to %s", targetAddress)
+	logger.Debug("proxy", "Establishing outbound connection to %s", targetAddress)
 	outboundConn, err := dial("tcp", targetAddress)
 	if err != nil {
 		logger.Debug("proxy", "Failed to connect to %s: %v", targetAddress, err)
@@ -23,14 +23,14 @@ func HandleConnection(inboundConn net.Conn, dial func(network, address string) (
 	}
 	defer outboundConn.Close()
 
-	logger.Debug("proxy", "Proxy connection to %s established, forwarding data", targetAddress)
+	logger.Debug("proxy", "Outbound connection to %s established, forwarding data", targetAddress)
 
 	// Forward data between connections
 	err = CopyData(outboundConn, inboundConn)
 	if err != nil {
-		logger.Debug("proxy", "Proxy connection to %s closed with error: %v", targetAddress, err)
+		logger.Debug("proxy", "Outbound connection to %s closed with error: %v", targetAddress, err)
 	} else {
-		logger.Debug("proxy", "Proxy connection to %s closed normally", targetAddress)
+		logger.Debug("proxy", "Outbound connection to %s closed normally", targetAddress)
 	}
 	return err
 }

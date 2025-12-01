@@ -14,6 +14,7 @@
 
 - SOCKS5 inbound - протокол SOCKS5 без авторизации
 - Direct outbound - прямое подключение в интернет
+- SOCKS5 outbound - подключение через SOCKS5 прокси без авторизации
 - Поддержка IPv4, IPv6 и доменных имен
 
 ## Использование
@@ -21,6 +22,8 @@
 ### Конфигурация
 
 Создайте файл `config.json`:
+
+**Direct outbound (прямое подключение):**
 
 ```json
 {
@@ -34,7 +37,22 @@
 }
 ```
 
-**Примечание:** SOCKS5 прокси работает без авторизации. Целевой адрес определяется из SOCKS5 протокола. Direct outbound работает как прямой выход в интернет.
+**SOCKS5 outbound (через другой SOCKS5 прокси):**
+
+```json
+{
+  "inbound": {
+    "type": "socks5",
+    "port": 1080
+  },
+  "outbound": {
+    "type": "socks5",
+    "proxy_address": "127.0.0.1:1081"
+  }
+}
+```
+
+**Примечание:** SOCKS5 прокси работает без авторизации. Целевой адрес определяется из SOCKS5 протокола. Direct outbound работает как прямой выход в интернет. SOCKS5 outbound позволяет цепочку прокси.
 
 ### Запуск
 
@@ -101,7 +119,9 @@ myproxy/
 ├── outbound/
 │   ├── interface.go       # Интерфейс Outbound
 │   ├── direct.go          # Direct outbound реализация
-│   └── direct_test.go     # Тесты direct outbound
+│   ├── direct_test.go     # Тесты direct outbound
+│   ├── socks5.go          # SOCKS5 outbound реализация
+│   └── socks5_test.go     # Тесты SOCKS5 outbound
 └── proxy/
     ├── core.go            # Основная логика прокси
     └── core_test.go       # Тесты прокси
