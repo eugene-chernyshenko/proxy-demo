@@ -22,6 +22,7 @@ func HandleConnection(
 	inboundID string,
 	rtr router.Router,
 	pluginManager *plugin.Manager,
+	outboundPool *outbound.Pool,
 ) error {
 	// Создаем контекст соединения
 	ctx := plugin.NewConnectionContext(inboundConn.RemoteAddr().String(), targetAddress)
@@ -53,10 +54,23 @@ func HandleConnection(
 	var finalOutboundID string
 
 	if outboundID != "" {
-		// Использовать существующий outbound из пула (пока не реализовано, используем текущий)
-		logger.Debug("proxy", "Router selected existing outbound %s (using current)", outboundID)
-		ob = currentOutbound
-		finalOutboundID = outboundID
+		// Использовать существующий outbound из пула
+		if outboundPool != nil {
+			poolOutbound, err := outboundPool.GetOutbound(outboundID)
+			if err != nil {
+				logger.Debug("proxy", "Failed to get outbound %s from pool: %v, using current", outboundID, err)
+				ob = currentOutbound
+				finalOutboundID = currentOutboundID
+			} else {
+				logger.Debug("proxy", "Router selected existing outbound %s from pool", outboundID)
+				ob = poolOutbound
+				finalOutboundID = outboundID
+			}
+		} else {
+			logger.Debug("proxy", "Router selected existing outbound %s (pool not available, using current)", outboundID)
+			ob = currentOutbound
+			finalOutboundID = outboundID
+		}
 	} else if outboundConfig != nil {
 		// Создать новый outbound из конфигурации
 		logger.Debug("proxy", "Router selected new outbound: type=%s", outboundConfig.Type)

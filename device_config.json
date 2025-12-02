@@ -1,0 +1,11 @@
+{
+  "proxy_host": "127.0.0.1",
+  "wss_port": 8443,
+  "quic_port": 8444,
+  "device_id": "device-1",
+  "location": "us-east",
+  "tags": ["mobile", "wifi"],
+  "heartbeat_interval": 30,
+  "tls_enabled": false,
+  "tls_skip_verify": false
+}

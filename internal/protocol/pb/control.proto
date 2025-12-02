@@ -1,0 +1,74 @@
+syntax = "proto3";
+
+package pb;
+
+option go_package = "example.com/me/myproxy/internal/protocol/pb";
+
+// RegisterRequest представляет запрос на регистрацию устройства
+message RegisterRequest {
+  string device_id = 1;
+  string location = 2;
+  int32 capacity = 3;
+  repeated string tags = 4;
+}
+
+// RegisterResponse представляет ответ на регистрацию
+message RegisterResponse {
+  string status = 1;
+  string device_id = 2;
+  string quic_address = 3; // Адрес для QUIC подключения (host:port)
+}
+
+// HeartbeatRequest представляет запрос heartbeat
+message HeartbeatRequest {
+  string device_id = 1;
+  int64 timestamp = 2;
+}
+
+// HeartbeatResponse представляет ответ heartbeat
+message HeartbeatResponse {
+  string status = 1;
+}
+
+// LoadReport представляет отчет о нагрузке устройства
+message LoadReport {
+  string device_id = 1;
+  int64 timestamp = 2;
+  int32 active_conns = 3;
+  int64 bytes_sent = 4;
+  int64 bytes_received = 5;
+}
+
+// Command представляет команду от POP к Device
+message Command {
+  string conn_id = 1; // Уникальный идентификатор соединения
+  
+  oneof command {
+    OpenTCP open_tcp = 2;
+    OpenUDP open_udp = 3;
+    Close close = 4;
+  }
+}
+
+// OpenTCP команда для открытия TCP stream
+message OpenTCP {
+  string target_address = 1; // Целевой адрес (host:port)
+}
+
+// OpenUDP команда для открытия UDP datagram
+message OpenUDP {
+  string target_address = 1; // Целевой адрес (host:port)
+}
+
+// Close команда для закрытия соединения
+message Close {
+  // Пустое сообщение, conn_id уже в Command
+}
+
+// CommandResponse представляет ответ на команду
+message CommandResponse {
+  string conn_id = 1;
+  bool success = 2;
+  string error = 3; // Сообщение об ошибке, если success = false
+}
+

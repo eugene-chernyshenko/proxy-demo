@@ -1,0 +1,29 @@
+{
+  "inbound": {
+    "type": "socks5",
+    "port": 1080,
+    "id": "test-inbound"
+  },
+  "outbound": {
+    "type": "direct",
+    "id": "test-outbound"
+  },
+  "plugins": {
+    "traffic_inbound": {
+      "enabled": true
+    },
+    "traffic_outbound": {
+      "enabled": true
+    }
+  },
+  "outbound_pool": {
+    "enabled": true,
+    "wss_port": 8443,
+    "quic_port": 8444,
+    "tls": {
+      "enabled": false
+    },
+    "heartbeat_interval": 30,
+    "heartbeat_timeout": 90
+  }
+}

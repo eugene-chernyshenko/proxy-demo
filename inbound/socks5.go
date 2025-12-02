@@ -3,10 +3,12 @@ package inbound
 import (
 	"encoding/binary"
 	"fmt"
+	"io"
 	"net"
 
 	"example.com/me/myproxy/internal/logger"
 	"example.com/me/myproxy/internal/plugin"
+	"example.com/me/myproxy/internal/protocol/socks5"
 )
 
 // SOCKS5Inbound реализует SOCKS5 inbound
@@ -131,57 +133,65 @@ func (s *SOCKS5Inbound) handleSOCKS5(conn net.Conn, handler Handler) error {
 	cmd := buf[1]
 	if cmd != 0x01 { // CONNECT
 		// Send error: command not supported
-		conn.Write([]byte{0x05, 0x07, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})
+		conn.Write(socks5.BuildErrorResponse(socks5.ReplyCommandNotSupported))
 		return fmt.Errorf("unsupported command: %d", cmd)
 	}
 
+	// ATYP уже прочитан в buf[3]
 	atyp := buf[3]
-	var targetAddress string
 
+	// Парсим адрес вручную, так как ATYP уже прочитан
+	var targetAddress string
 	switch atyp {
 	case 0x01: // IPv4
-		n, err = conn.Read(buf[:6])
-		if err != nil || n != 6 {
+		addrBuf := make([]byte, 6) // 4 bytes IP + 2 bytes port
+		if _, err := io.ReadFull(conn, addrBuf); err != nil {
+			conn.Write(socks5.BuildErrorResponse(socks5.ReplyAddressTypeNotSupported))
 			return fmt.Errorf("failed to read IPv4 address: %w", err)
 		}
-		ip := net.IP(buf[0:4])
-		port := binary.BigEndian.Uint16(buf[4:6])
+		ip := net.IP(addrBuf[0:4])
+		port := binary.BigEndian.Uint16(addrBuf[4:6])
 		targetAddress = fmt.Sprintf("%s:%d", ip.String(), port)
 
 	case 0x03: // Domain name
-		n, err = conn.Read(buf[:1])
-		if err != nil || n != 1 {
+		domainLenBuf := make([]byte, 1)
+		if _, err := io.ReadFull(conn, domainLenBuf); err != nil {
+			conn.Write(socks5.BuildErrorResponse(socks5.ReplyAddressTypeNotSupported))
 			return fmt.Errorf("failed to read domain length: %w", err)
 		}
-		domainLen := int(buf[0])
-		n, err = conn.Read(buf[1 : 1+domainLen+2])
-		if err != nil || n != domainLen+2 {
+		domainLen := int(domainLenBuf[0])
+		if domainLen == 0 || domainLen > 255 {
+			conn.Write(socks5.BuildErrorResponse(socks5.ReplyAddressTypeNotSupported))
+			return fmt.Errorf("invalid domain length: %d", domainLen)
+		}
+		domainBuf := make([]byte, domainLen+2)
+		if _, err := io.ReadFull(conn, domainBuf); err != nil {
+			conn.Write(socks5.BuildErrorResponse(socks5.ReplyAddressTypeNotSupported))
 			return fmt.Errorf("failed to read domain: %w", err)
 		}
-		domain := string(buf[1 : 1+domainLen])
-		port := binary.BigEndian.Uint16(buf[1+domainLen : 1+domainLen+2])
+		domain := string(domainBuf[0:domainLen])
+		port := binary.BigEndian.Uint16(domainBuf[domainLen : domainLen+2])
 		targetAddress = fmt.Sprintf("%s:%d", domain, port)
 
 	case 0x04: // IPv6
-		n, err = conn.Read(buf[:18])
-		if err != nil || n != 18 {
+		addrBuf := make([]byte, 18) // 16 bytes IP + 2 bytes port
+		if _, err := io.ReadFull(conn, addrBuf); err != nil {
+			conn.Write(socks5.BuildErrorResponse(socks5.ReplyAddressTypeNotSupported))
 			return fmt.Errorf("failed to read IPv6 address: %w", err)
 		}
-		ip := net.IP(buf[0:16])
-		port := binary.BigEndian.Uint16(buf[16:18])
+		ip := net.IP(addrBuf[0:16])
+		port := binary.BigEndian.Uint16(addrBuf[16:18])
 		targetAddress = fmt.Sprintf("[%s]:%d", ip.String(), port)
 
 	default:
-		// Send error: invalid address type
-		conn.Write([]byte{0x05, 0x08, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})
+		conn.Write(socks5.BuildErrorResponse(socks5.ReplyAddressTypeNotSupported))
 		return fmt.Errorf("unsupported address type: %d", atyp)
 	}
 
 	logger.Debug("inbound", "SOCKS5 connection request from %s to %s", remoteAddr, targetAddress)
 
-	// Send success response: [VER, REP, RSV, ATYP, address, port]
-	// For simplicity, send 0.0.0.0:0
-	response := []byte{0x05, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
+	// Send success response используя общий парсер
+	response := socks5.BuildResponse(socks5.ReplySuccess)
 	_, err = conn.Write(response)
 	if err != nil {
 		return fmt.Errorf("failed to send response: %w", err)
@@ -201,4 +211,3 @@ func (s *SOCKS5Inbound) handleSOCKS5(conn net.Conn, handler Handler) error {
 	}
 	return err
 }
-
