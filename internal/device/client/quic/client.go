@@ -50,11 +50,16 @@ func (c *Client) Connect(ctx context.Context) error {
 	var tlsConf *tls.Config
 	if c.tlsConfig != nil {
 		tlsConf = c.tlsConfig
+		// Убеждаемся, что NextProtos установлен
+		if tlsConf.NextProtos == nil {
+			tlsConf.NextProtos = []string{"quic-proxy"}
+		}
 	} else {
 		// Для тестирования с самоподписанным сертификатом
 		tlsConf = &tls.Config{
 			InsecureSkipVerify: true,
 			ServerName:         c.proxyHost, // Устанавливаем ServerName для SNI
+			NextProtos:         []string{"quic-proxy"}, // ALPN протокол для QUIC
 		}
 	}
 
@@ -62,9 +67,11 @@ func (c *Client) Connect(ctx context.Context) error {
 		// Настройки QUIC
 	}
 
+	logger.Debug("device", "Dialing QUIC to %s...", addr)
 	conn, err := quic.Dial(ctx, udpConn, udpAddr, tlsConf, config)
 	if err != nil {
 		udpConn.Close()
+		logger.Error("device", "Failed to dial QUIC: %v", err)
 		return fmt.Errorf("failed to dial QUIC: %w", err)
 	}
 
@@ -72,27 +79,30 @@ func (c *Client) Connect(ctx context.Context) error {
 	logger.Debug("device", "QUIC connection established to %s", addr)
 
 	// Отправляем device_id в первом stream для идентификации
+	logger.Debug("device", "Opening registration stream...")
 	regStream, err := conn.OpenStreamSync(ctx)
 	if err != nil {
 		conn.CloseWithError(0, "failed to open registration stream")
+		logger.Error("device", "Failed to open registration stream: %v", err)
 		return fmt.Errorf("failed to open registration stream: %w", err)
 	}
+	logger.Debug("device", "Registration stream opened")
 
 	// Отправляем device_id как простую строку с новой строкой
 	deviceIDBytes := []byte(c.deviceID + "\n")
+	logger.Debug("device", "Sending device_id: %s", c.deviceID)
 	if _, err := regStream.Write(deviceIDBytes); err != nil {
 		regStream.Close()
 		conn.CloseWithError(0, "failed to send device_id")
+		logger.Error("device", "Failed to send device_id: %v", err)
 		return fmt.Errorf("failed to send device_id: %w", err)
 	}
+	logger.Debug("device", "Device_id sent, waiting before closing stream...")
 	
-	// Не закрываем stream сразу - даем серверу время прочитать данные
-	// Stream будет закрыт сервером после чтения device_id
-	// Или можно использовать небольшую задержку перед закрытием
-	// Но лучше оставить stream открытым и закрыть его позже, если нужно
-	// Для регистрации stream можно закрыть после небольшой задержки
-	time.Sleep(100 * time.Millisecond) // Даем серверу время прочитать
+	// Даем серверу время прочитать данные
+	time.Sleep(100 * time.Millisecond)
 	regStream.Close()
+	logger.Debug("device", "Registration stream closed")
 
 	logger.Debug("device", "Device ID %s sent to QUIC server", c.deviceID)
 	return nil
@@ -115,12 +125,15 @@ func (c *Client) OpenStream(ctx context.Context, connID string) (*quic.Stream, e
 
 // HandleStreams обрабатывает входящие streams (если нужно)
 func (c *Client) HandleStreams(ctx context.Context) error {
+	logger.Debug("device", "QUIC stream handler started, waiting for streams...")
 	for {
 		stream, err := c.conn.AcceptStream(ctx)
 		if err != nil {
+			logger.Debug("device", "QUIC stream accept error: %v", err)
 			return fmt.Errorf("failed to accept stream: %w", err)
 		}
 
+		logger.Debug("device", "Accepted new QUIC stream: stream_id=%d", stream.StreamID())
 		go c.handler.HandleStream(ctx, stream)
 	}
 }

@@ -3,13 +3,14 @@ package wss
 import (
 	"context"
 	"crypto/tls"
-	"encoding/binary"
 	"fmt"
 	"io"
 	"time"
 
+	"example.com/me/myproxy/internal/constants"
 	"example.com/me/myproxy/internal/logger"
 	pb "example.com/me/myproxy/internal/protocol/pb"
+	"example.com/me/myproxy/internal/protocol/wss"
 	"google.golang.org/protobuf/proto"
 	"nhooyr.io/websocket"
 )
@@ -65,22 +66,35 @@ func (c *Client) Register(ctx context.Context, location string, tags []string) (
 		Tags:     tags,
 	}
 
+	logger.Debug("device", "Sending RegisterRequest: device_id=%s, location=%s, tags=%v", c.deviceID, location, tags)
 	if err := c.sendMessage(ctx, req); err != nil {
+		logger.Error("device", "Failed to send register request: %v", err)
 		return nil, fmt.Errorf("failed to send register request: %w", err)
 	}
+	logger.Debug("device", "RegisterRequest sent, waiting for response...")
 
 	// Читаем ответ
+	// Важно: читаем ответ до запуска HandleMessages(), чтобы избежать конфликта чтения
+	logger.Debug("device", "Calling readMessage() to read RegisterResponse...")
 	resp, err := c.readMessage(ctx)
 	if err != nil {
+		logger.Error("device", "Failed to read register response: %v", err)
 		return nil, fmt.Errorf("failed to read register response: %w", err)
 	}
 
+	logger.Debug("device", "readMessage() returned, received message type: %T", resp)
+	logger.Debug("device", "Register response received, checking type...")
 	registerResp, ok := resp.(*pb.RegisterResponse)
 	if !ok {
-		return nil, fmt.Errorf("unexpected message type")
+		logger.Error("device", "Unexpected message type: %T, expected *pb.RegisterResponse", resp)
+		return nil, fmt.Errorf("unexpected message type: %T", resp)
 	}
 
-	if registerResp.Status != "ok" {
+	logger.Debug("device", "RegisterResponse received: status=%s, device_id=%s, quic_address=%s", 
+		registerResp.Status, registerResp.DeviceId, registerResp.QuicAddress)
+
+	if registerResp.Status != constants.StatusOK {
+		logger.Error("device", "Registration failed with status: %s", registerResp.Status)
 		return nil, fmt.Errorf("registration failed: %s", registerResp.Status)
 	}
 
@@ -95,25 +109,33 @@ func (c *Client) SendHeartbeat(ctx context.Context) error {
 		Timestamp: time.Now().Unix(),
 	}
 
+	logger.Debug("device", "Sending HeartbeatRequest: device_id=%s, timestamp=%d", c.deviceID, req.Timestamp)
 	if err := c.sendMessage(ctx, req); err != nil {
+		logger.Error("device", "Failed to send heartbeat: %v", err)
 		return fmt.Errorf("failed to send heartbeat: %w", err)
 	}
 
 	// Читаем ответ
 	resp, err := c.readMessage(ctx)
 	if err != nil {
+		logger.Error("device", "Failed to read heartbeat response: %v", err)
 		return fmt.Errorf("failed to read heartbeat response: %w", err)
 	}
 
+	logger.Debug("device", "Received heartbeat response type: %T", resp)
 	heartbeatResp, ok := resp.(*pb.HeartbeatResponse)
 	if !ok {
-		return fmt.Errorf("unexpected message type")
+		logger.Error("device", "Unexpected message type for heartbeat: %T", resp)
+		return fmt.Errorf("unexpected message type: %T", resp)
 	}
 
-	if heartbeatResp.Status != "ok" {
+	logger.Debug("device", "HeartbeatResponse received: status=%s", heartbeatResp.Status)
+	if heartbeatResp.Status != constants.StatusOK {
+		logger.Error("device", "Heartbeat failed with status: %s", heartbeatResp.Status)
 		return fmt.Errorf("heartbeat failed: %s", heartbeatResp.Status)
 	}
 
+	logger.Debug("device", "Heartbeat successful for device %s", c.deviceID)
 	return nil
 }
 
@@ -132,17 +154,23 @@ func (c *Client) SendLoadReport(ctx context.Context, activeConns int32, bytesSen
 
 // HandleMessages обрабатывает входящие сообщения (команды от POP)
 func (c *Client) HandleMessages(ctx context.Context) error {
+	logger.Debug("device", "WSS message handler started, waiting for messages...")
 	for {
 		msg, err := c.readMessage(ctx)
 		if err != nil {
 			if err == io.EOF || websocket.CloseStatus(err) == websocket.StatusNormalClosure {
+				logger.Debug("device", "WSS connection closed normally")
 				return nil // Нормальное закрытие
 			}
+			logger.Error("device", "Failed to read WSS message: %v", err)
 			return fmt.Errorf("failed to read message: %w", err)
 		}
 
+		logger.Debug("device", "Received WSS message type: %T", msg)
+
 		// Обрабатываем команду
 		if cmd, ok := msg.(*pb.Command); ok {
+			logger.Debug("device", "Processing command: conn_id=%s", cmd.ConnId)
 			if err := c.handler.HandleCommand(ctx, cmd); err != nil {
 				logger.Error("device", "Error handling command: %v", err)
 				// Отправляем ответ об ошибке
@@ -152,93 +180,23 @@ func (c *Client) HandleMessages(ctx context.Context) error {
 					Error:   err.Error(),
 				}
 				c.sendMessage(ctx, resp)
+			} else {
+				logger.Debug("device", "Command processed successfully: conn_id=%s", cmd.ConnId)
 			}
+		} else {
+			logger.Debug("device", "Received non-command message: %T", msg)
 		}
 	}
 }
 
 // sendMessage отправляет сообщение через WebSocket
 func (c *Client) sendMessage(ctx context.Context, msg proto.Message) error {
-	data, err := proto.Marshal(msg)
-	if err != nil {
-		return fmt.Errorf("failed to marshal message: %w", err)
-	}
-
-	// Отправляем длину сообщения (4 байта) + само сообщение
-	lengthBytes := make([]byte, 4)
-	binary.BigEndian.PutUint32(lengthBytes, uint32(len(data)))
-
-	writer, err := c.conn.Writer(ctx, websocket.MessageBinary)
-	if err != nil {
-		return fmt.Errorf("failed to get writer: %w", err)
-	}
-	defer writer.Close()
-
-	if _, err := writer.Write(lengthBytes); err != nil {
-		return fmt.Errorf("failed to write length: %w", err)
-	}
-	if _, err := writer.Write(data); err != nil {
-		return fmt.Errorf("failed to write message: %w", err)
-	}
-
-	return nil
+	return wss.SendMessage(ctx, c.conn, msg)
 }
 
 // readMessage читает сообщение из WebSocket
 func (c *Client) readMessage(ctx context.Context) (proto.Message, error) {
-	msgType, reader, err := c.conn.Reader(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	if msgType != websocket.MessageBinary {
-		// Читаем до конца frame, чтобы освободить reader
-		io.Copy(io.Discard, reader)
-		return nil, fmt.Errorf("unexpected message type: %v", msgType)
-	}
-
-	// Читаем длину сообщения (4 байта)
-	lengthBytes := make([]byte, 4)
-	if _, err := io.ReadFull(reader, lengthBytes); err != nil {
-		io.Copy(io.Discard, reader) // Освобождаем reader
-		return nil, fmt.Errorf("failed to read message length: %w", err)
-	}
-	length := binary.BigEndian.Uint32(lengthBytes)
-
-	// Читаем само сообщение
-	messageBytes := make([]byte, length)
-	if _, err := io.ReadFull(reader, messageBytes); err != nil {
-		// Пытаемся прочитать остаток reader перед возвратом ошибки
-		io.Copy(io.Discard, reader)
-		return nil, fmt.Errorf("failed to read message: %w", err)
-	}
-
-	// В библиотеке nhooyr.io/websocket reader автоматически закрывается после чтения всего frame
-	// Но мы должны убедиться, что прочитали все данные до конца frame
-	// Читаем остаток до EOF (если есть)
-	// Используем io.Copy для гарантированного чтения всего reader
-	io.Copy(io.Discard, reader)
-
-	// Пытаемся определить тип сообщения
-	// Пробуем Command
-	var cmd pb.Command
-	if err := proto.Unmarshal(messageBytes, &cmd); err == nil && cmd.ConnId != "" {
-		return &cmd, nil
-	}
-
-	// Пробуем RegisterResponse
-	var registerResp pb.RegisterResponse
-	if err := proto.Unmarshal(messageBytes, &registerResp); err == nil && registerResp.DeviceId != "" {
-		return &registerResp, nil
-	}
-
-	// Пробуем HeartbeatResponse
-	var heartbeatResp pb.HeartbeatResponse
-	if err := proto.Unmarshal(messageBytes, &heartbeatResp); err == nil {
-		return &heartbeatResp, nil
-	}
-
-	return nil, fmt.Errorf("unknown message type")
+	return wss.ReadMessage(ctx, c.conn)
 }
 
 // Close закрывает WSS соединение

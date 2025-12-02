@@ -43,26 +43,35 @@ func (c *Client) Start(location string, tags []string, heartbeatInterval int) er
 	ctx := context.Background()
 
 	// Шаг 1: Подключение к WSS
+	logger.Debug("device", "Step 1: Connecting to WSS...")
 	if err := c.wssClient.Connect(ctx); err != nil {
 		return fmt.Errorf("failed to connect to WSS: %w", err)
 	}
+	logger.Debug("device", "Step 1: WSS connection established")
 
 	// Шаг 2: Регистрация через WSS
+	logger.Debug("device", "Step 2: Registering device %s (location=%s, tags=%v)...", c.deviceID, location, tags)
 	registerResp, err := c.wssClient.Register(ctx, location, tags)
 	if err != nil {
+		logger.Error("device", "Step 2: Registration failed: %v", err)
 		c.wssClient.Close()
 		return fmt.Errorf("failed to register device: %w", err)
 	}
 
+	logger.Debug("device", "Step 2: Device %s registered successfully, quic_address: %s", c.deviceID, registerResp.QuicAddress)
 	logger.Info("device", "Device %s registered successfully, quic_address: %s", c.deviceID, registerResp.QuicAddress)
 
 	// Шаг 3: Подключение к QUIC
+	logger.Debug("device", "Step 3: Connecting to QUIC...")
 	if err := c.quicClient.Connect(ctx); err != nil {
+		logger.Error("device", "Step 3: QUIC connection failed: %v", err)
 		c.wssClient.Close()
 		return fmt.Errorf("failed to connect to QUIC: %w", err)
 	}
+	logger.Debug("device", "Step 3: QUIC connection established")
 
 	// Шаг 3.5: Запуск обработки входящих QUIC streams (от POP)
+	logger.Debug("device", "Step 3.5: Starting QUIC stream handler...")
 	go func() {
 		if err := c.quicClient.HandleStreams(ctx); err != nil {
 			logger.Error("device", "QUIC stream handling error: %v", err)
@@ -70,9 +79,13 @@ func (c *Client) Start(location string, tags []string, heartbeatInterval int) er
 	}()
 
 	// Шаг 4: Настройка обработчиков команд
+	logger.Debug("device", "Step 4: Setting up command handlers...")
 	c.setupCommandHandlers()
+	logger.Debug("device", "Step 4: Command handlers configured")
 
 	// Шаг 5: Запуск обработки сообщений WSS (команды от POP)
+	// ВАЖНО: Запускаем ПОСЛЕ успешной регистрации, чтобы избежать конфликта чтения
+	logger.Debug("device", "Step 5: Starting WSS message handler...")
 	go func() {
 		if err := c.wssClient.HandleMessages(ctx); err != nil {
 			logger.Error("device", "WSS message handling error: %v", err)
@@ -81,6 +94,7 @@ func (c *Client) Start(location string, tags []string, heartbeatInterval int) er
 
 	// Шаг 6: Запуск heartbeat
 	if heartbeatInterval > 0 {
+		logger.Debug("device", "Step 6: Starting heartbeat (interval=%d seconds)...", heartbeatInterval)
 		c.startHeartbeat(ctx, heartbeatInterval)
 	}
 

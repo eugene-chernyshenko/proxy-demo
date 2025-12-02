@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"strings"
 
 	"example.com/me/myproxy/internal/logger"
+	quicproto "example.com/me/myproxy/internal/protocol/quic"
 	"github.com/quic-go/quic-go"
 )
 
@@ -36,33 +36,13 @@ func (h *StreamHandler) HandleStream(ctx context.Context, stream *quic.Stream) {
 
 	logger.Debug("device", "Handling QUIC stream from POP: conn_id=%s", connID)
 
-	// Читаем target address из stream (адрес + \n)
-	// Читаем байты до новой строки вручную, чтобы не использовать буфер Scanner
-	// который может скрыть данные от ProxyTCP
-	var targetAddressBytes []byte
-	buf := make([]byte, 1)
-	for {
-		n, err := stream.Read(buf)
-		if n > 0 {
-			if buf[0] == '\n' {
-				break
-			}
-			targetAddressBytes = append(targetAddressBytes, buf[0])
-		}
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			logger.Error("device", "Failed to read target address from stream %s: %v", connID, err)
-			return
-		}
-		if len(targetAddressBytes) > 256 {
-			logger.Error("device", "Target address too long for stream %s", connID)
-			return
-		}
+	// Читаем target address из stream
+	targetAddress, err := quicproto.ReadTargetAddress(stream)
+	if err != nil {
+		logger.Error("device", "Failed to read target address from stream %s: %v", connID, err)
+		return
 	}
 
-	targetAddress := strings.TrimSpace(string(targetAddressBytes))
 	logger.Debug("device", "Received target address %s for stream %s", targetAddress, connID)
 
 	// Проксируем TCP трафик

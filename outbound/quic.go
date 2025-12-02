@@ -9,6 +9,7 @@ import (
 
 	"example.com/me/myproxy/internal/device"
 	"example.com/me/myproxy/internal/logger"
+	quicproto "example.com/me/myproxy/internal/protocol/quic"
 	"github.com/quic-go/quic-go"
 )
 
@@ -65,9 +66,8 @@ func (q *QUICOutbound) Dial(network, address string) (net.Conn, error) {
 	q.streams[connID] = stream
 	dev.AddStream(connID, stream)
 
-	// Отправляем target address через stream (простой протокол: адрес + \n)
-	addrBytes := []byte(address + "\n")
-	if _, err := stream.Write(addrBytes); err != nil {
+	// Отправляем target address через stream
+	if err := quicproto.WriteTargetAddress(stream, address); err != nil {
 		stream.Close()
 		delete(q.streams, connID)
 		dev.RemoveStream(connID)

@@ -3,20 +3,17 @@ package quic
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"crypto/rsa"
 	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
 	"fmt"
 	"io"
-	"math/big"
 	"net"
 	"strings"
 	"time"
 
+	"example.com/me/myproxy/internal/constants"
 	"example.com/me/myproxy/internal/device"
 	"example.com/me/myproxy/internal/logger"
+	tlsconfig "example.com/me/myproxy/internal/tls"
 	"github.com/quic-go/quic-go"
 )
 
@@ -57,14 +54,15 @@ func (s *Server) Start() error {
 	var tlsConf *tls.Config
 	if s.tlsConfig != nil {
 		tlsConf = s.tlsConfig
+		if tlsConf.NextProtos == nil {
+			tlsConf.NextProtos = []string{"quic-proxy"}
+		}
 	} else {
 		// Для тестирования создаем самоподписанный сертификат
-		cert, err := generateSelfSignedCert()
+		var err error
+		tlsConf, err = tlsconfig.NewTLSConfigForQUIC(nil, []string{"quic-proxy"})
 		if err != nil {
 			return fmt.Errorf("failed to generate self-signed certificate: %w", err)
-		}
-		tlsConf = &tls.Config{
-			Certificates: []tls.Certificate{cert},
 		}
 		logger.Debug("device", "Using self-signed certificate for QUIC (testing only)")
 	}
@@ -101,7 +99,7 @@ func (s *Server) handleConnection(conn *quic.Conn) {
 	logger.Debug("device", "New QUIC connection from %s", conn.RemoteAddr())
 
 	// Читаем device_id из первого stream
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), constants.RegistrationStreamTimeout)
 	defer cancel()
 	
 	regStream, err := conn.AcceptStream(ctx)
@@ -211,44 +209,4 @@ func (s *Server) Stop() error {
 	return nil
 }
 
-// generateSelfSignedCert создает самоподписанный сертификат для тестирования
-func generateSelfSignedCert() (tls.Certificate, error) {
-	// Генерируем приватный ключ
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		return tls.Certificate{}, err
-	}
-
-	// Создаем сертификат
-	template := x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject: pkix.Name{
-			Organization:  []string{"MyProxy Test"},
-			Country:       []string{"US"},
-			Province:      []string{""},
-			Locality:      []string{""},
-			StreetAddress: []string{""},
-			PostalCode:    []string{""},
-		},
-		NotBefore:    time.Now(),
-		NotAfter:     time.Now().Add(365 * 24 * time.Hour),
-		KeyUsage:     x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		BasicConstraintsValid: true,
-	}
-
-	// Подписываем сертификат
-	certDER, err := x509.CreateCertificate(rand.Reader, &template, &template, &key.PublicKey, key)
-	if err != nil {
-		return tls.Certificate{}, err
-	}
-
-	// Конвертируем в формат для TLS
-	cert := tls.Certificate{
-		Certificate: [][]byte{certDER},
-		PrivateKey:  key,
-	}
-
-	return cert, nil
-}
 

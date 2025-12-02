@@ -2,13 +2,13 @@ package wss
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
-	"io"
 
+	"example.com/me/myproxy/internal/constants"
 	"example.com/me/myproxy/internal/device"
 	"example.com/me/myproxy/internal/logger"
 	pb "example.com/me/myproxy/internal/protocol/pb"
+	wssproto "example.com/me/myproxy/internal/protocol/wss"
 	"google.golang.org/protobuf/proto"
 	"nhooyr.io/websocket"
 )
@@ -30,71 +30,48 @@ func (h *Handler) HandleConnection(ctx context.Context, conn *websocket.Conn, re
 	// Читаем сообщения в цикле
 	for {
 		// Читаем сообщение
-		_, reader, err := conn.Reader(ctx)
+		logger.Debug("device", "Waiting for next message from %s...", remoteAddr)
+		msg, err := wssproto.ReadMessage(ctx, conn)
 		if err != nil {
 			if websocket.CloseStatus(err) != websocket.StatusNormalClosure {
+				logger.Debug("device", "Error reading message from %s: %v", remoteAddr, err)
 				return fmt.Errorf("failed to read message: %w", err)
 			}
+			logger.Debug("device", "Connection from %s closed normally", remoteAddr)
 			return nil // Нормальное закрытие
 		}
 
-		// Читаем длину сообщения (4 байта, big-endian)
-		lengthBytes := make([]byte, 4)
-		if _, err := io.ReadFull(reader, lengthBytes); err != nil {
-			return fmt.Errorf("failed to read message length: %w", err)
-		}
-		length := binary.BigEndian.Uint32(lengthBytes)
+		logger.Debug("device", "Received message in HandleConnection loop from %s: %T", remoteAddr, msg)
 
-		// Читаем само сообщение
-		messageBytes := make([]byte, length)
-		if _, err := io.ReadFull(reader, messageBytes); err != nil {
-			// Пытаемся прочитать остаток reader перед возвратом ошибки
-			io.Copy(io.Discard, reader)
-			return fmt.Errorf("failed to read message: %w", err)
-		}
-
-		// Убеждаемся, что reader прочитан до конца (читаем остаток до EOF)
-		// Используем io.Copy для гарантированного чтения всего reader
-		io.Copy(io.Discard, reader)
-
-		// Обрабатываем сообщение ПОСЛЕ того, как reader полностью прочитан
-		if err := h.handleMessage(ctx, conn, messageBytes, remoteAddr); err != nil {
-			logger.Error("device", "Error handling message: %v", err)
+		// Обрабатываем сообщение
+		if err := h.handleMessage(ctx, conn, msg, remoteAddr); err != nil {
+			logger.Error("device", "Error handling message from %s: %v", remoteAddr, err)
 			// Продолжаем обработку других сообщений
 		}
+		logger.Debug("device", "Message from %s handled, continuing loop...", remoteAddr)
 	}
 }
 
 // handleMessage обрабатывает одно сообщение
-func (h *Handler) handleMessage(ctx context.Context, conn *websocket.Conn, data []byte, remoteAddr string) error {
-	// Пытаемся определить тип сообщения по первым байтам
-	// Для простоты используем простую эвристику или добавляем type field в proto
-
-	// Пробуем RegisterRequest
-	var registerReq pb.RegisterRequest
-	if err := proto.Unmarshal(data, &registerReq); err == nil && registerReq.DeviceId != "" {
-		return h.handleRegister(ctx, conn, &registerReq, remoteAddr)
+func (h *Handler) handleMessage(ctx context.Context, conn *websocket.Conn, msg proto.Message, remoteAddr string) error {
+	logger.Debug("device", "Received message type: %T from %s", msg, remoteAddr)
+	
+	switch m := msg.(type) {
+	case *pb.RegisterRequest:
+		return h.handleRegister(ctx, conn, m, remoteAddr)
+	case *pb.HeartbeatRequest:
+		return h.handleHeartbeat(ctx, conn, m, remoteAddr)
+	case *pb.LoadReport:
+		return h.handleLoadReport(ctx, conn, m, remoteAddr)
+	case *pb.CommandResponse:
+		return h.handleCommandResponse(ctx, conn, m, remoteAddr)
+	case *pb.RegisterResponse, *pb.HeartbeatResponse:
+		// Игнорируем ответы - это сообщения, которые сервер отправляет device, а не получает от него
+		logger.Debug("device", "Ignoring response message type: %T (server should not receive responses)", msg)
+		return nil
+	default:
+		return fmt.Errorf("unknown message type: %T", msg)
 	}
-
-	// Пробуем HeartbeatRequest
-	var heartbeatReq pb.HeartbeatRequest
-	if err := proto.Unmarshal(data, &heartbeatReq); err == nil && heartbeatReq.DeviceId != "" {
-		return h.handleHeartbeat(ctx, conn, &heartbeatReq, remoteAddr)
-	}
-
-	// Пробуем LoadReport
-	var loadReport pb.LoadReport
-	if err := proto.Unmarshal(data, &loadReport); err == nil && loadReport.DeviceId != "" {
-		return h.handleLoadReport(ctx, conn, &loadReport, remoteAddr)
-	}
-
-	// Пробуем CommandResponse
-	var cmdResp pb.CommandResponse
-	if err := proto.Unmarshal(data, &cmdResp); err == nil && cmdResp.ConnId != "" {
-		return h.handleCommandResponse(ctx, conn, &cmdResp, remoteAddr)
-	}
-
-	return fmt.Errorf("unknown message type")
 }
 
 // handleRegister обрабатывает регистрацию устройства
@@ -118,21 +95,40 @@ func (h *Handler) handleRegister(ctx context.Context, conn *websocket.Conn, req 
 	if err != nil {
 		logger.Error("device", "Failed to register device %s: %v", req.DeviceId, err)
 		resp := &pb.RegisterResponse{
-			Status:   "error",
+			Status:   constants.StatusError,
 			DeviceId: req.DeviceId,
 		}
 		return h.sendMessage(ctx, conn, resp)
 	}
 
 	// Формируем ответ
+	// Извлекаем IP адрес из remoteAddr (формат "IP:port")
+	quicHost := remoteAddr
+	if idx := len(remoteAddr) - 1; idx >= 0 {
+		// Убираем порт из remoteAddr, оставляем только IP
+		for i := len(remoteAddr) - 1; i >= 0; i-- {
+			if remoteAddr[i] == ':' {
+				quicHost = remoteAddr[:i]
+				break
+			}
+		}
+	}
 	resp := &pb.RegisterResponse{
-		Status:      "ok",
+		Status:      constants.StatusOK,
 		DeviceId:    req.DeviceId,
-		QuicAddress: fmt.Sprintf("%s:443", remoteAddr), // TODO: получить из конфига
+		QuicAddress: fmt.Sprintf("%s:%d", quicHost, constants.DefaultQUICPort),
 	}
 
 	logger.Debug("device", "Device %s registered successfully", req.DeviceId)
-	return h.sendMessage(ctx, conn, resp)
+	logger.Debug("device", "Sending RegisterResponse: status=%s, device_id=%s, quic_address=%s", resp.Status, resp.DeviceId, resp.QuicAddress)
+	if err := h.sendMessage(ctx, conn, resp); err != nil {
+		logger.Error("device", "Failed to send RegisterResponse: %v", err)
+		return err
+	}
+	logger.Debug("device", "RegisterResponse sent successfully, returning from handleRegister")
+	// Важно: после отправки ответа мы возвращаемся из handleRegister,
+	// и HandleConnection продолжит читать следующее сообщение в цикле
+	return nil
 }
 
 // handleHeartbeat обрабатывает heartbeat
@@ -143,13 +139,13 @@ func (h *Handler) handleHeartbeat(ctx context.Context, conn *websocket.Conn, req
 	if err := h.registry.UpdateHeartbeat(req.DeviceId); err != nil {
 		logger.Error("device", "Failed to update heartbeat for device %s: %v", req.DeviceId, err)
 		resp := &pb.HeartbeatResponse{
-			Status: "error",
+			Status: constants.StatusError,
 		}
 		return h.sendMessage(ctx, conn, resp)
 	}
 
 	resp := &pb.HeartbeatResponse{
-		Status: "ok",
+		Status: constants.StatusOK,
 	}
 	return h.sendMessage(ctx, conn, resp)
 }
@@ -182,29 +178,7 @@ func (h *Handler) handleCommandResponse(ctx context.Context, conn *websocket.Con
 
 // sendMessage отправляет сообщение через WebSocket
 func (h *Handler) sendMessage(ctx context.Context, conn *websocket.Conn, msg proto.Message) error {
-	data, err := proto.Marshal(msg)
-	if err != nil {
-		return fmt.Errorf("failed to marshal message: %w", err)
-	}
-
-	// Отправляем длину сообщения (4 байта) + само сообщение
-	lengthBytes := make([]byte, 4)
-	binary.BigEndian.PutUint32(lengthBytes, uint32(len(data)))
-
-	writer, err := conn.Writer(ctx, websocket.MessageBinary)
-	if err != nil {
-		return fmt.Errorf("failed to get writer: %w", err)
-	}
-	defer writer.Close()
-
-	if _, err := writer.Write(lengthBytes); err != nil {
-		return fmt.Errorf("failed to write length: %w", err)
-	}
-	if _, err := writer.Write(data); err != nil {
-		return fmt.Errorf("failed to write message: %w", err)
-	}
-
-	return nil
+	return wssproto.SendMessage(ctx, conn, msg)
 }
 
 // SendCommand отправляет команду устройству
