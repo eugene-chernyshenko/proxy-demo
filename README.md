@@ -11,6 +11,7 @@
 - **Device Client** - клиент для подключения устройств к прокси
 - **Система плагинов** - учет трафика по inbound/outbound ID
 - **Динамический роутер** - выбор outbound из пула устройств
+- **Load Testing Utility** - утилита для нагрузочного тестирования с детальными метриками
 
 ## Быстрый старт
 
@@ -94,6 +95,31 @@ curl --socks5-hostname 127.0.0.1:1080 https://example.com
 # Терминал 3: Тест
 curl --socks5-hostname 127.0.0.1:1080 http://httpbin.org/get
 ```
+
+**Load Testing:**
+
+```bash
+# Сборка утилиты
+go build -o loadtest ./cmd/loadtest
+
+# Запуск нагрузочного теста
+./loadtest -proxy 127.0.0.1:1080 -url http://httpbin.org/get -c 10 -n 100
+
+# Параметры:
+#   -proxy: адрес SOCKS5 прокси (по умолчанию: 127.0.0.1:1080)
+#   -url: целевой URL для тестирования (по умолчанию: http://httpbin.org/get)
+#   -c: количество конкурентных запросов (по умолчанию: 10)
+#   -n: общее количество запросов (по умолчанию: 100)
+```
+
+Утилита выводит отчет с метриками:
+
+- Success/Error rate
+- Разрез по типам ошибок
+- HTTP status codes
+- Latency метрики (TTFB, DNS resolve, Connect, TLSHandshake) с перцентилями (50, 75, 85, 90, 95, 99, 100)
+- RPS (Requests Per Second)
+- Throughput (KB/s)
 
 ## Протокол POP-Device
 
