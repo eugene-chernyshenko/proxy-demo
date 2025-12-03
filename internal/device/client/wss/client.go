@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
+	"sync"
 	"time"
 
 	"example.com/me/myproxy/internal/constants"
@@ -23,6 +24,8 @@ type Client struct {
 	tlsConfig *tls.Config
 	conn      *websocket.Conn
 	handler   *Handler
+	readMu    sync.Mutex // Мьютекс для синхронизации чтения из WebSocket
+	writeMu   sync.Mutex // Мьютекс для синхронизации записи в WebSocket
 }
 
 // NewClient создает новый WSS client
@@ -155,20 +158,55 @@ func (c *Client) SendLoadReport(ctx context.Context, activeConns int32, bytesSen
 // HandleMessages обрабатывает входящие сообщения (команды от POP)
 func (c *Client) HandleMessages(ctx context.Context) error {
 	logger.Debug("device", "WSS message handler started, waiting for messages...")
-	for {
-		msg, err := c.readMessage(ctx)
-		if err != nil {
-			if err == io.EOF || websocket.CloseStatus(err) == websocket.StatusNormalClosure {
-				logger.Debug("device", "WSS connection closed normally")
-				return nil // Нормальное закрытие
+		for {
+			// Используем контекст с таймаутом для чтения, чтобы не блокировать слишком долго
+			// Это позволяет SendHeartbeat прервать чтение и прочитать свой ответ
+			readCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			msg, err := c.readMessage(readCtx)
+			cancel()
+			
+			if err != nil {
+				// Проверяем, не истек ли родительский контекст
+				if ctx.Err() != nil {
+					logger.Debug("device", "WSS message handler context cancelled")
+					return ctx.Err()
+				}
+				// Если это таймаут, продолжаем ожидание (это нормально)
+				// Увеличили таймаут до 30 секунд, чтобы уменьшить ложные срабатывания
+				if err == context.DeadlineExceeded {
+					logger.Debug("device", "WSS read timeout, continuing...")
+					continue
+				}
+				// Проверяем различные типы ошибок закрытия соединения
+				errStr := err.Error()
+				if err == io.EOF || 
+				   websocket.CloseStatus(err) == websocket.StatusNormalClosure ||
+				   errStr == "use of closed network connection" ||
+				   errStr == "failed to get reader: use of closed network connection" ||
+				   errStr == "failed to get reader: EOF" ||
+				   errStr == "failed to get reader: failed to read frame header: EOF" ||
+				   errStr == "failed to read message: failed to get reader: EOF" ||
+				   errStr == "failed to read message: failed to get reader: failed to read frame header: EOF" {
+					logger.Debug("device", "WSS connection closed normally")
+					return nil // Нормальное закрытие
+				}
+				logger.Error("device", "Failed to read WSS message: %v", err)
+				return fmt.Errorf("failed to read message: %w", err)
 			}
-			logger.Error("device", "Failed to read WSS message: %v", err)
-			return fmt.Errorf("failed to read message: %w", err)
-		}
 
 		logger.Debug("device", "Received WSS message type: %T", msg)
 
-		// Обрабатываем команду
+		// Игнорируем ответы (HeartbeatResponse, RegisterResponse) - они обрабатываются в других местах
+		if _, ok := msg.(*pb.HeartbeatResponse); ok {
+			logger.Debug("device", "Ignoring HeartbeatResponse in HandleMessages (handled in SendHeartbeat)")
+			continue
+		}
+		if _, ok := msg.(*pb.RegisterResponse); ok {
+			logger.Debug("device", "Ignoring RegisterResponse in HandleMessages (handled in Register)")
+			continue
+		}
+
+		// Обрабатываем только команды
 		if cmd, ok := msg.(*pb.Command); ok {
 			logger.Debug("device", "Processing command: conn_id=%s", cmd.ConnId)
 			if err := c.handler.HandleCommand(ctx, cmd); err != nil {
@@ -190,12 +228,19 @@ func (c *Client) HandleMessages(ctx context.Context) error {
 }
 
 // sendMessage отправляет сообщение через WebSocket
+// Использует мьютекс для предотвращения одновременной записи
 func (c *Client) sendMessage(ctx context.Context, msg proto.Message) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
 	return wss.SendMessage(ctx, c.conn, msg)
 }
 
 // readMessage читает сообщение из WebSocket
+// ВАЖНО: Использует мьютекс для предотвращения одновременного чтения
+// из одного WebSocket соединения (SendHeartbeat и HandleMessages)
 func (c *Client) readMessage(ctx context.Context) (proto.Message, error) {
+	c.readMu.Lock()
+	defer c.readMu.Unlock()
 	return wss.ReadMessage(ctx, c.conn)
 }
 

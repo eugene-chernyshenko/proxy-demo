@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"time"
 
 	"example.com/me/myproxy/internal/logger"
 	quicproto "example.com/me/myproxy/internal/protocol/quic"
@@ -54,12 +55,21 @@ func (h *StreamHandler) HandleStream(ctx context.Context, stream *quic.Stream) {
 
 // ProxyTCP проксирует TCP трафик через QUIC stream
 func ProxyTCP(stream *quic.Stream, targetAddress string) error {
-	// Подключаемся к целевому адресу
-	targetConn, err := net.Dial("tcp", targetAddress)
+	// Подключаемся к целевому адресу с таймаутом
+	dialer := &net.Dialer{
+		Timeout: 10 * time.Second, // Таймаут подключения
+	}
+	targetConn, err := dialer.Dial("tcp", targetAddress)
 	if err != nil {
 		return fmt.Errorf("failed to connect to %s: %w", targetAddress, err)
 	}
 	defer targetConn.Close()
+
+	// Устанавливаем таймаут только для TCP соединения (не для QUIC stream)
+	// QUIC stream управляется QUIC протоколом, не нужно устанавливать deadline
+	deadline := time.Now().Add(5 * time.Minute)
+	targetConn.SetDeadline(deadline)
+	// НЕ устанавливаем deadline на stream - QUIC сам управляет таймаутами
 
 	logger.Debug("device", "Proxying TCP traffic: stream -> %s", targetAddress)
 
@@ -78,6 +88,10 @@ func ProxyTCP(stream *quic.Stream, targetAddress string) error {
 
 	// Ждем завершения одной из сторон
 	err = <-done
+	// Закрываем только TCP соединение, stream закроется в defer HandleStream
+	targetConn.Close()
+	<-done // Ждем вторую goroutine
+
 	if err != nil && err != io.EOF {
 		return err
 	}

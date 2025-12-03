@@ -55,8 +55,9 @@ func (q *QUICOutbound) Dial(network, address string) (net.Conn, error) {
 
 	logger.Debug("outbound", "Opening QUIC stream for %s, conn_id=%s", address, connID)
 
-	// Открываем новый stream
-	ctx := context.Background()
+	// Открываем новый stream с таймаутом
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	stream, err := quicConn.OpenStreamSync(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open QUIC stream: %w", err)
@@ -112,7 +113,9 @@ func (c *quicStreamConn) Close() error {
 	}
 	c.closed = true
 
+	// Закрываем stream для записи (отправляем FIN)
 	c.stream.Close()
+	
 	c.outbound.mu.Lock()
 	delete(c.outbound.streams, c.connID)
 	c.outbound.mu.Unlock()

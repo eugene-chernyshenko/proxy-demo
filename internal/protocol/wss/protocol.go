@@ -60,7 +60,14 @@ func ReadMessage(ctx context.Context, conn *websocket.Conn) (proto.Message, erro
 	// ВАЖНО: Reader() блокируется до получения следующего сообщения от peer
 	msgType, reader, err := conn.Reader(ctx)
 	if err != nil {
-		return nil, err
+		// Проверяем, не EOF ли это (нормальное закрытие соединения)
+		errStr := err.Error()
+		if err == io.EOF || 
+		   errStr == "EOF" || 
+		   errStr == "failed to read frame header: EOF" {
+			return nil, io.EOF
+		}
+		return nil, fmt.Errorf("failed to get reader: %w", err)
 	}
 
 	if msgType != websocket.MessageBinary {
@@ -85,9 +92,9 @@ func ReadMessage(ctx context.Context, conn *websocket.Conn) (proto.Message, erro
 		return nil, fmt.Errorf("failed to read message: %w", err)
 	}
 
-	// Убеждаемся, что reader прочитан до конца (читаем остаток до EOF)
-	// В библиотеке nhooyr.io/websocket reader автоматически закрывается после чтения всего frame
-	// Но мы должны убедиться, что прочитали все данные до конца frame
+	// ВАЖНО: Читаем остаток reader до EOF перед возвратом
+	// Это гарантирует, что следующий Reader() не получит старые данные
+	// В библиотеке nhooyr.io/websocket reader должен быть полностью прочитан
 	DiscardReader(reader)
 
 	// Определяем тип сообщения
@@ -104,7 +111,11 @@ func ReadMessage(ctx context.Context, conn *websocket.Conn) (proto.Message, erro
 
 // DiscardReader читает и отбрасывает все данные из reader до EOF
 func DiscardReader(reader io.Reader) {
-	io.Copy(io.Discard, reader)
+	// Используем io.Copy для полного чтения WebSocket reader до EOF
+	// io.Copy гарантированно читает все данные до EOF или ошибки
+	// Это критично для nhooyr.io/websocket - reader должен быть полностью прочитан
+	// перед вызовом следующего conn.Reader()
+	_, _ = io.Copy(io.Discard, reader)
 }
 
 // UnmarshalMessage определяет тип Protocol Buffers сообщения и unmarshals его

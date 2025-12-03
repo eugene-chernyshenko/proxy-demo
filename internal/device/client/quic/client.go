@@ -127,8 +127,30 @@ func (c *Client) OpenStream(ctx context.Context, connID string) (*quic.Stream, e
 func (c *Client) HandleStreams(ctx context.Context) error {
 	logger.Debug("device", "QUIC stream handler started, waiting for streams...")
 	for {
-		stream, err := c.conn.AcceptStream(ctx)
+		// Используем контекст с таймаутом для AcceptStream
+		// Это предотвращает зависание при отсутствии активности
+		acceptCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		stream, err := c.conn.AcceptStream(acceptCtx)
+		cancel()
+		
 		if err != nil {
+			// Проверяем, не истек ли контекст родителя
+			if ctx.Err() != nil {
+				logger.Debug("device", "QUIC stream handler context cancelled")
+				return ctx.Err()
+			}
+			// Если это таймаут, продолжаем ожидание
+			if err == context.DeadlineExceeded {
+				logger.Debug("device", "QUIC stream accept timeout, continuing...")
+				continue
+			}
+			// Проверяем, не закрыто ли соединение сервером (device offline)
+			errStr := err.Error()
+			if errStr == "Application error 0x0 (remote): device offline" ||
+			   errStr == "failed to accept stream: Application error 0x0 (remote): device offline" {
+				logger.Debug("device", "QUIC connection closed by server (device marked offline)")
+				return nil // Нормальное закрытие сервером
+			}
 			logger.Debug("device", "QUIC stream accept error: %v", err)
 			return fmt.Errorf("failed to accept stream: %w", err)
 		}

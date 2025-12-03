@@ -3,6 +3,7 @@ package wss
 import (
 	"context"
 	"fmt"
+	"io"
 
 	"example.com/me/myproxy/internal/constants"
 	"example.com/me/myproxy/internal/device"
@@ -33,12 +34,23 @@ func (h *Handler) HandleConnection(ctx context.Context, conn *websocket.Conn, re
 		logger.Debug("device", "Waiting for next message from %s...", remoteAddr)
 		msg, err := wssproto.ReadMessage(ctx, conn)
 		if err != nil {
-			if websocket.CloseStatus(err) != websocket.StatusNormalClosure {
-				logger.Debug("device", "Error reading message from %s: %v", remoteAddr, err)
-				return fmt.Errorf("failed to read message: %w", err)
+			// Проверяем различные типы ошибок закрытия соединения
+			// Проверяем исходную ошибку (может быть обернута)
+			errStr := err.Error()
+			if err == io.EOF ||
+			   websocket.CloseStatus(err) == websocket.StatusNormalClosure ||
+			   errStr == "EOF" ||
+			   errStr == "failed to read frame header: EOF" ||
+			   errStr == "failed to get reader: EOF" ||
+			   errStr == "failed to get reader: failed to read frame header: EOF" ||
+			   errStr == "failed to read message: EOF" ||
+			   errStr == "failed to read message: failed to get reader: EOF" ||
+			   errStr == "failed to read message: failed to get reader: failed to read frame header: EOF" {
+				logger.Debug("device", "Connection from %s closed normally", remoteAddr)
+				return nil // Нормальное закрытие
 			}
-			logger.Debug("device", "Connection from %s closed normally", remoteAddr)
-			return nil // Нормальное закрытие
+			logger.Debug("device", "Error reading message from %s: %v", remoteAddr, err)
+			return fmt.Errorf("failed to read message: %w", err)
 		}
 
 		logger.Debug("device", "Received message in HandleConnection loop from %s: %T", remoteAddr, msg)

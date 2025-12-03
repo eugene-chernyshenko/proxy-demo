@@ -74,7 +74,14 @@ func (c *Client) Start(location string, tags []string, heartbeatInterval int) er
 	logger.Debug("device", "Step 3.5: Starting QUIC stream handler...")
 	go func() {
 		if err := c.quicClient.HandleStreams(ctx); err != nil {
-			logger.Error("device", "QUIC stream handling error: %v", err)
+			// Проверяем, не закрыто ли соединение сервером (device offline)
+			errStr := err.Error()
+			if errStr == "Application error 0x0 (remote): device offline" ||
+			   errStr == "failed to accept stream: Application error 0x0 (remote): device offline" {
+				logger.Debug("device", "QUIC stream handler stopped: connection closed by server (device offline)")
+			} else {
+				logger.Error("device", "QUIC stream handling error: %v", err)
+			}
 		}
 	}()
 
@@ -148,6 +155,16 @@ func (c *Client) startHeartbeat(ctx context.Context, interval int) {
 			select {
 			case <-c.heartbeatTicker.C:
 				if err := c.wssClient.SendHeartbeat(ctx); err != nil {
+					// Проверяем, не закрыто ли соединение
+					errStr := err.Error()
+					if errStr == "use of closed network connection" || 
+					   errStr == "failed to get writer: use of closed network connection" ||
+					   errStr == "failed to get reader: use of closed network connection" ||
+					   errStr == "failed to send heartbeat: failed to get writer: failed to get writer: use of closed network connection" ||
+					   errStr == "failed to read heartbeat response: failed to get reader: use of closed network connection" {
+						logger.Debug("device", "WSS connection closed, stopping heartbeat")
+						return
+					}
 					logger.Error("device", "Heartbeat failed: %v", err)
 				} else {
 					logger.Debug("device", "Heartbeat sent for device %s", c.deviceID)
